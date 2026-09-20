@@ -1,3 +1,5 @@
+google-genai
+python-dotenv
 pypdf>=5.0
 python-docx>=1.1
 openpyxl>=3.1
