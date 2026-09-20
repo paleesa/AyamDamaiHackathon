@@ -3,7 +3,7 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from backend.app.services.classifier import classify_emails
+from backend.app.classifier import apply_attachment_rule, classify_emails
 
 
 DATA_DIR = Path("../data/sdoc-hackathon-bundle")
@@ -49,6 +49,11 @@ def main():
         )
 
         classifications = classify_emails(batch)
+
+        classifications = apply_attachment_rule(
+        batch,
+        classifications,
+        )
 
         # Update ONLY category
         for email_id, category in classifications.items():
