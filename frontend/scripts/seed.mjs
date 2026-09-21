@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const url = process.env.SUPABASE_URL;
+const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 if (!url || !serviceKey) {
@@ -22,8 +22,8 @@ const supabase = createClient(url, serviceKey, {
 
 // Adjust these paths if your data lives elsewhere.
 const repoRoot = path.resolve(__dirname, "../..");
-const emailsDir = path.join(repoRoot, "data", "emails");
-const classificationPath = path.join(repoRoot, "data", "classification.json");
+const emailsDir = path.join(repoRoot, "data", "sdoc-hackathon-bundle", "inbox");
+const classificationPath = path.join(repoRoot, "submission", "final_submission.json");
 
 const classification = JSON.parse(
   await readFile(classificationPath, "utf8"),
@@ -53,7 +53,16 @@ for (const entry of entries) {
     attachments: email.attachments ?? [],
     category: c.category,
     status: c.status,
-    review_reason: c.review_reason,
+    review_reason:
+      c.review_reason === "Bill of Lading (BL) is missing or unreadable."
+        ? "unreadable"
+        : c.review_reason === "No usable Shipping Instruction (SI) or Bill of Lading (BL) document found."
+          ? "missing_attachment"
+          : c.review_reason === "Bill of Lading (BL) is unreadable."
+            ? "unreadable"
+            : c.review_reason === "One or more comparison fields are missing."
+              ? "missing_value"
+               : c.review_reason,
     defect_fields: c.defect_fields ?? [],
     has_defect: c.has_defect,
   });

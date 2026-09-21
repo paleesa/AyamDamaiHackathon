@@ -1,0 +1,113 @@
+import Link from "next/link";
+import { ArrowLeft, TriangleAlert } from "lucide-react";
+import { notFound } from "next/navigation";
+import { getDocumentComparison, getEmailById } from "@/lib/api";
+
+type PageProps = {
+  params: Promise<{ id: string }>;
+};
+
+export default async function ReviewPage({ params }: PageProps) {
+  const { id } = await params;
+
+  const [email, comparison] = await Promise.all([
+    getEmailById(id),
+    getDocumentComparison(id),
+  ]);
+
+  if (!email || !comparison) notFound();
+
+  return (
+    <div className="space-y-8">
+      <Link
+        href={`/emails/${id}`}
+        className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-500 hover:text-slate-900"
+      >
+        <ArrowLeft className="h-3.5 w-3.5" />
+        Email
+      </Link>
+
+      <header>
+        <p className="font-mono text-xs text-slate-500">{email.email_id}</p>
+        <h1 className="mt-1 text-lg font-semibold text-slate-900">
+          Human review
+        </h1>
+        <p className="mt-1 text-sm text-slate-500">{email.subject}</p>
+      </header>
+
+      <section className="rounded-sm border border-amber-200 bg-amber-50/60 p-5">
+        <div className="flex items-start gap-3">
+          <TriangleAlert className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" />
+
+          <div>
+            <h2 className="text-sm font-semibold text-amber-900">
+              Verification requires human review
+            </h2>
+
+            <p className="mt-1 text-xs text-amber-800">
+              {comparison.review_reason ?? "The document could not be reliably verified."}
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section className="rounded-sm border border-slate-200 bg-white">
+        <header className="border-b border-slate-200 px-5 py-4">
+          <h2 className="text-sm font-semibold text-slate-900">
+            Review details
+          </h2>
+        </header>
+
+        <dl className="divide-y divide-slate-100">
+          <div className="grid grid-cols-[140px_1fr] gap-4 px-5 py-4 text-xs">
+            <dt className="text-slate-500">Status</dt>
+            <dd className="font-mono font-medium text-amber-700">
+              {comparison.status}
+            </dd>
+          </div>
+
+          <div className="grid grid-cols-[140px_1fr] gap-4 px-5 py-4 text-xs">
+            <dt className="text-slate-500">SI attachment</dt>
+            <dd className="font-mono text-slate-700">
+              {comparison.si_file ?? "Missing"}
+            </dd>
+          </div>
+
+          <div className="grid grid-cols-[140px_1fr] gap-4 px-5 py-4 text-xs">
+            <dt className="text-slate-500">BL attachment</dt>
+            <dd className="font-mono text-slate-700">
+              {comparison.bl_file ?? "Missing"}
+            </dd>
+          </div>
+
+          <div className="grid grid-cols-[140px_1fr] gap-4 px-5 py-4 text-xs">
+            <dt className="text-slate-500">Review fields</dt>
+            <dd className="font-mono text-slate-700">
+              {comparison.review_fields.length > 0
+                ? comparison.review_fields.join(", ")
+                : "Document-level review"}
+            </dd>
+          </div>
+        </dl>
+      </section>
+
+      <section className="rounded-sm border border-slate-200 bg-white p-5">
+        <h2 className="text-sm font-semibold text-slate-900">
+          Recommended action
+        </h2>
+
+        <p className="mt-1 text-xs leading-relaxed text-slate-500">
+          Open and verify the source attachment manually before approving
+          this shipment document.
+        </p>
+
+        <Link
+          href={`/emails/${id}`}
+          className="mt-4 inline-flex items-center rounded-sm bg-slate-900 px-3.5 py-2 text-xs font-medium text-white hover:bg-slate-800"
+        >
+          Return to email
+        </Link>
+      </section>
+    </div>
+  );
+}
