@@ -13,8 +13,7 @@ from sklearn.metrics import confusion_matrix, classification_report
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 GROUND_TRUTH_PATH = BASE_DIR / "evaluation" / "ground_truth.json"
-SUBMISSION_PATH = BASE_DIR / "backend" / "submission.json"
-
+SUBMISSION_PATH = BASE_DIR / "submission" / "final_submission.json"
 
 # --------------------------------------------------
 # Load JSON files

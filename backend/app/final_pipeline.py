@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from .category_correction import correct_category
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+INBOX_DIR = PROJECT_ROOT / "data" / "sdoc-hackathon-bundle" / "inbox"
 
 CLASSIFIER_FILE = (
     PROJECT_ROOT
@@ -29,6 +31,31 @@ def load_json(path: Path):
     with open(path, "r", encoding="utf-8") as file:
         return json.load(file)
 
+def apply_category_corrections(classifier):
+    corrected = {}
+
+    for email_id, classification in classifier.items():
+
+        email_file = INBOX_DIR / f"{email_id}.json"
+
+        if email_file.exists():
+            email = load_json(email_file)
+
+            category = correct_category(
+                classification.get("category", "GENERAL"),
+                email.get("subject", ""),
+                email.get("body", ""),
+            )
+
+            corrected[email_id] = {
+                **classification,
+                "category": category,
+            }
+
+        else:
+            corrected[email_id] = classification
+
+    return corrected
 
 def build_final_submission():
     print("=" * 70)
@@ -36,6 +63,8 @@ def build_final_submission():
     print("=" * 70)
 
     classifier = load_json(CLASSIFIER_FILE)
+    classifier = apply_category_corrections(classifier)
+
     comparisons = load_json(COMPARISON_FILE)
 
     print(f"\nClassifier emails : {len(classifier)}")

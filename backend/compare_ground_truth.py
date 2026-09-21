@@ -116,7 +116,7 @@ for email in category_errors[:20]:
 print("\nSAMPLE STATUS ERRORS")
 print("-" * 70)
 
-for email in status_errors[:20]:
+for email in status_errors:
     print(
         email,
         "| GT:", gt[email].get("status"),
