@@ -1919,7 +1919,7 @@
     "has_defect": false
   },
   "email_266": {
-    "category": "GENERAL",
+    "category": "SI_REQUEST",
     "status": "OK",
     "review_reason": null,
     "defect_fields": [],
