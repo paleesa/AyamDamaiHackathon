@@ -3,6 +3,7 @@ import InboxTable from "@/components/email/InboxTable";
 import { getEmails } from "@/lib/api";
 
 export const metadata = { title: "Inbox" };
+export const dynamic = "force-dynamic";
 
 export default async function InboxPage() {
   const emails = await getEmails();

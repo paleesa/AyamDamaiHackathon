@@ -1,3 +1,4 @@
+
 import {
   CircleCheck,
   ClipboardCheck,
@@ -16,6 +17,7 @@ import {
 } from "@/lib/mock-data";
 import type { EmailCategory } from "@/lib/types";
 
+export const dynamic = "force-dynamic";
 export const metadata = { title: "Dashboard" };
 
 export default async function DashboardPage() {
