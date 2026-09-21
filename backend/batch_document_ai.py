@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 
 from app.document_parser import read_attachment, detect_doc_type
-from app.services.document_ai import (
+from app.document_ai import (
     extract_document_with_ai,
     extract_pdf_with_ai,
 )

@@ -1,16 +1,11 @@
-import json
-from pathlib import Path
-import sys
+from __future__ import annotations
 
+import json
 from google import genai
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-from backend.app.config import GEMINI_API_KEY
-
+from .config import GEMINI_API_KEY, GEMINI_MODEL
 
 client = genai.Client(api_key=GEMINI_API_KEY)
-
 
 CATEGORIES = [
     "BL_COMPARISON",
@@ -19,7 +14,6 @@ CATEGORIES = [
     "GENERAL",
     "SPAM",
 ]
-
 
 CLASSIFIER_PROMPT = """
 You are an email classifier for a shipping documentation operations team.
@@ -109,10 +103,8 @@ def classify_emails(emails: list[dict]) -> dict[str, str]:
 
     for email in emails:
         email_id = email.get("email_id", "")
-
         subject = email.get("subject", "")
         body = email.get("body", "")
-
         attachments = email.get("attachments", [])
 
         attachment_names = "\n".join(
@@ -139,7 +131,7 @@ Attachments:
     prompt = CLASSIFIER_PROMPT + "\n".join(email_blocks)
 
     response = client.models.generate_content(
-        model="gemini-3.5-flash-lite",
+        model=GEMINI_MODEL,
         contents=prompt,
         config={
             "response_mime_type": "application/json",
@@ -147,7 +139,6 @@ Attachments:
     )
 
     result = json.loads(response.text)
-
     classifications = result.get("classifications", [])
 
     output = {}
@@ -163,10 +154,8 @@ Attachments:
 
         output[email_id] = category
 
-    # Make sure Gemini did not miss an email.
     expected_ids = {email["email_id"] for email in emails}
     returned_ids = set(output.keys())
-
     missing_ids = expected_ids - returned_ids
 
     if missing_ids:
@@ -181,11 +170,9 @@ def apply_attachment_rule(
     emails: list[dict],
     classifications: dict[str, str],
 ) -> dict[str, str]:
-
     for email in emails:
         email_id = email["email_id"]
         category = classifications[email_id]
-
         attachments = email.get("attachments", [])
 
         # If Gemini predicted SI_REQUEST but the email
