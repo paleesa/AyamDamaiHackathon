@@ -30,3 +30,17 @@ export interface ComparisonFieldRow {
   bl_value: string | null;
   status: DbFieldStatus;
 }
+
+export interface DocumentComparisonRow {
+  email_id: string;
+  si_file: string | null;
+  bl_file: string | null;
+  status: VerificationStatus;
+  review_reason: ReviewReason | null;
+  defect_fields: ComparisonFieldKey[];
+  review_fields: ComparisonFieldKey[];
+  si_fields: Record<string, string | null>;
+  bl_fields: Record<string, string | null>;
+  created_at: string;
+  updated_at: string;
+}
