@@ -93,6 +93,18 @@ export async function getDocumentComparison(
   return data ? (data as DocumentComparisonRow) : null;
 }
 
+export function getAttachmentUrl(filename: string): string {
+  const storagePath = filename.startsWith("attachments/")
+    ? filename.slice("attachments/".length)
+    : filename;
+
+  const { data } = supabase.storage
+    .from("attachments")
+    .getPublicUrl(storagePath);
+
+  return data.publicUrl;
+}
+
 /* ------------------------------------------------------------------ */
 /* Dashboard aggregates                                                */
 /* ------------------------------------------------------------------ */
