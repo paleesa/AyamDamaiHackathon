@@ -1,111 +1,234 @@
 from __future__ import annotations
 
-from .classifier import classify
-from .comparator import compare_fields, normalize_fields
-from .document_parser import (
-    detect_doc_type,
-    extract_fields,
-    is_missing_value,
-    read_attachment,
-    DocumentReadError,
-)
+import json
+import re
+from pathlib import Path
 
-REVIEW_WRONG_DOC = "wrong_doc_type"
-REVIEW_MISSING_ATTACHMENT = "missing_attachment"
-REVIEW_UNREADABLE = "unreadable"
-REVIEW_MISSING_VALUE = "missing_value"
+from app.comparator import normalize_fields, compare_documents
 
-def _result(category, status="OK", review_reason=None,
-            defect_fields=None, has_defect=False):
-    return {
-        "category": category,
-        "status": status,
-        "review_reason": review_reason,
-        "defect_fields": defect_fields or [],
-        "has_defect": has_defect,
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+CACHE_FILE = PROJECT_ROOT / "submission" / "document_extractions.json"
+OUTPUT_FILE = PROJECT_ROOT / "submission" / "document_comparisons.json"
+
+
+def get_email_id(filename: str) -> str | None:
+    """
+    Convert:
+        email_004_BL.txt -> email_004
+        email_004_SI.xlsx -> email_004
+    """
+    match = re.match(r"^(email_\d+)_(SI|BL)\.", filename, re.IGNORECASE)
+
+    if not match:
+        return None
+
+    return match.group(1)
+
+
+def load_extractions():
+    with open(CACHE_FILE, "r", encoding="utf-8") as file:
+        return json.load(file)
+
+
+def group_documents(extractions):
+    """
+    Group extracted documents by email ID.
+
+    Example:
+    {
+        "email_004": {
+            "SI": {...},
+            "BL": {...}
+        }
+    }
+    """
+
+    grouped = {}
+
+    for filename, result in extractions.items():
+
+        email_id = get_email_id(filename)
+
+        if email_id is None:
+            continue
+
+        if not isinstance(result, dict):
+            continue
+
+        # Ignore skipped files and actual processing errors.
+        if result.get("status") in {"ERROR", "SKIPPED"}:
+            continue
+
+        document_type = result.get("document_type")
+
+        # Normal SI / BL
+        if document_type in {"SI", "BL"}:
+
+            if email_id not in grouped:
+                grouped[email_id] = {}
+
+            grouped[email_id][document_type] = {
+                "filename": filename,
+                "data": result,
+                "readable": True,
+            }
+
+        # Preserve corrupted/unreadable PDFs.
+        elif document_type == "UNREADABLE":
+
+            filename_upper = filename.upper()
+
+            if "_BL." in filename_upper:
+                document_type = "BL"
+            elif "_SI." in filename_upper:
+                document_type = "SI"
+            else:
+                continue
+
+            if email_id not in grouped:
+                grouped[email_id] = {}
+
+            grouped[email_id][document_type] = {
+                "filename": filename,
+                "data": result,
+                "readable": False,
+            }
+
+    return grouped
+
+
+def compare_email_documents(email_id, documents):
+    """
+    Compare SI and BL for one email.
+    """
+
+    si = documents.get("SI")
+    bl = documents.get("BL")
+    
+        # Document exists but cannot be read.
+    if si is not None and not si.get("readable", True):
+        return {
+            "status": "NEEDS_REVIEW",
+            "defect_fields": [],
+            "review_reason": "Shipping Instruction (SI) is unreadable.",
+            "si_file": si["filename"],
+        }
+
+    if bl is not None and not bl.get("readable", True):
+        return {
+            "status": "NEEDS_REVIEW",
+            "defect_fields": [],
+            "review_reason": "Bill of Lading (BL) is unreadable.",
+            "bl_file": bl["filename"],
+        }
+
+    # No SI and no BL
+    if si is None and bl is None:
+        return {
+            "status": "NEEDS_REVIEW",
+            "defect_fields": [],
+            "review_reason": "No usable SI or BL document found.",
+        }
+
+    # SI missing
+    if si is None:
+        return {
+            "status": "NEEDS_REVIEW",
+            "defect_fields": [],
+            "review_reason": "Shipping Instruction (SI) is missing.",
+        }
+
+    # BL missing
+    # A document may exist but be unreadable/corrupted.
+    # Treat this as NEEDS_REVIEW rather than inventing values.
+    if bl is None:
+        return {
+            "status": "NEEDS_REVIEW",
+            "defect_fields": [],
+            "review_reason": "Bill of Lading (BL) is missing or unreadable.",
+        }
+
+    si_data = normalize_fields(si["data"])
+    bl_data = normalize_fields(bl["data"])
+
+    comparison = compare_documents(si_data, bl_data)
+
+    result = {
+        "status": comparison["status"],
+        "defect_fields": comparison["defect_fields"],
+        "review_fields": comparison["review_fields"],
+        "review_reason": None,
+        "si_file": si["filename"],
+        "bl_file": bl["filename"],
+        "si_fields": si_data,
+        "bl_fields": bl_data,
     }
 
-def _attachment_by_name(email, suffix):
-    return [a for a in email.get("attachments", [])
-            if a.lower().endswith(suffix.lower())]
-
-def process_email(email, inbox):
-    category = classify(email)
-
-    if category != "BL_COMPARISON":
-        return _result(category)
-
-    si_paths = _attachment_by_name(email, "_SI.txt")
-    si_paths += [a for a in email.get("attachments", [])
-                 if "_SI." in a.upper() and a not in si_paths]
-
-    bl_paths = [a for a in email.get("attachments", [])
-                if "_BL." in a.upper()]
-
-    # The dataset uses SI/BL filename conventions. Content validation below
-    # prevents wrong documents from being accepted.
-    if not si_paths or not bl_paths:
-        return _result(
-            category,
-            status="NEEDS_REVIEW",
-            review_reason=REVIEW_MISSING_ATTACHMENT,
+    if comparison["status"] == "NEEDS_REVIEW":
+        result["review_reason"] = (
+            "One or more comparison fields are missing."
         )
 
-    si_path = si_paths[0]
-    bl_path = bl_paths[0]
+    return result
 
-    try:
-        si_text = read_attachment(inbox.read_bytes(si_path), si_path)
-    except Exception:
-        return _result(category, "NEEDS_REVIEW", REVIEW_UNREADABLE)
 
-    try:
-        bl_text = read_attachment(inbox.read_bytes(bl_path), bl_path)
-    except Exception:
-        return _result(category, "NEEDS_REVIEW", REVIEW_UNREADABLE)
+def run_pipeline():
+    print("=" * 70)
+    print("SDOC AI - DOCUMENT COMPARISON PIPELINE")
+    print("=" * 70)
 
-    si_type = detect_doc_type(si_text)
-    bl_type = detect_doc_type(bl_text)
+    extractions = load_extractions()
 
-    if si_type == "UNREADABLE" or bl_type == "UNREADABLE":
-        return _result(category, "NEEDS_REVIEW", REVIEW_UNREADABLE)
+    print(f"\nLoaded {len(extractions)} cached documents.")
 
-    if si_type != "SI" or bl_type != "BL":
-        return _result(category, "NEEDS_REVIEW", REVIEW_WRONG_DOC)
+    grouped = group_documents(extractions)
 
-    raw_si = extract_fields(si_text)
-    raw_bl = extract_fields(bl_text)
+    print(f"Found {len(grouped)} email groups.")
 
-    missing = [
-        field for field in raw_si
-        if is_missing_value(raw_si.get(field))
-        or is_missing_value(raw_bl.get(field))
-    ]
+    comparisons = {}
 
-    if missing:
-        return _result(
-            category,
-            status="NEEDS_REVIEW",
-            review_reason=REVIEW_MISSING_VALUE,
+    for email_id in sorted(grouped.keys()):
+
+        result = compare_email_documents(
+            email_id,
+            grouped[email_id],
         )
 
-    si = normalize_fields(raw_si)
-    bl = normalize_fields(raw_bl)
+        comparisons[email_id] = result
 
-    defects = compare_fields(si, bl)
+    # Save results
+    OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
 
-    if defects:
-        return _result(
-            category,
-            status="MISMATCH",
-            defect_fields=defects,
-            has_defect=True,
+    with open(OUTPUT_FILE, "w", encoding="utf-8") as file:
+        json.dump(
+            comparisons,
+            file,
+            indent=2,
+            ensure_ascii=False,
         )
 
-    return _result(category)
+    # Statistics
+    statuses = {}
 
-def process_inbox(inbox):
-    submission = {}
-    for email in inbox:
-        submission[email["email_id"]] = process_email(email, inbox)
-    return submission
+    for result in comparisons.values():
+        status = result["status"]
+        statuses[status] = statuses.get(status, 0) + 1
+
+    print("\n" + "=" * 70)
+    print("COMPARISON COMPLETE")
+    print("=" * 70)
+
+    print(f"Email groups : {len(comparisons)}")
+
+    print("\nStatuses:")
+
+    for status, count in sorted(statuses.items()):
+        print(f"  {status}: {count}")
+
+    print(f"\nOutput:")
+    print(OUTPUT_FILE)
+
+
+if __name__ == "__main__":
+    run_pipeline()
