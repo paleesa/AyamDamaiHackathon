@@ -1,21 +1,12 @@
-FROM python:3.11-slim
+FROM python:3.12-slim
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
-
+ENV PYTHONUNBUFFERED=1
 WORKDIR /app
-
-# System deps (pypdf/docx/xlsx don't need much)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential \
-    && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app ./app
+COPY . .
 
-EXPOSE 8000
-
-# Default: HTTP API. For batch: `docker run ... python -m app.main batch`
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Cloud Run injects $PORT — 8080 is the default if unset
+CMD exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080} --proxy-headers --forwarded-allow-ips "*"

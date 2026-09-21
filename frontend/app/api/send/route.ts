@@ -41,7 +41,7 @@ export async function POST(req: NextRequest) {
         .from("attachments")
         .upload(storagePath, buffer, {
           contentType: file.type || "application/octet-stream",
-          upsert: false,
+          upsert: true,
         });
 
       if (uploadError) {
