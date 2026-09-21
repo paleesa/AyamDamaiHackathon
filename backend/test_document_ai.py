@@ -1,5 +1,5 @@
 from app.document_parser import read_attachment, detect_doc_type
-from app.services.document_ai import extract_document_with_ai
+from app.document_ai import extract_document_with_ai
 
 
 def main():

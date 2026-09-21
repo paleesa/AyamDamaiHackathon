@@ -1,423 +1,271 @@
 from __future__ import annotations
 
 import json
-import re
+import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
-from .comparator import normalize_fields, compare_documents
-from .category_correction import correct_category
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-
-CACHE_FILE = PROJECT_ROOT / "submission" / "document_extractions.json"
-CLASSIFIER_FILE = PROJECT_ROOT / "submission" / "classifier_submission.json"
-OUTPUT_FILE = PROJECT_ROOT / "submission" / "document_comparisons.json"
-INBOX_DIR = PROJECT_ROOT / "data" / "sdoc-hackathon-bundle" / "inbox"
+from .classifier import classify_emails, apply_attachment_rule
+from .document_parser import read_attachment
+from .document_ai import extract_document_with_ai, extract_pdf_with_ai
+from .normalizer import normalize_fields
+from .comparator import compare_documents
+from .db import upsert_email, upsert_comparison
 
 
-def load_json(path: Path):
-    with open(path, "r", encoding="utf-8") as file:
-        return json.load(file)
+# Valid values for the `review_reason` enum in Supabase.
+# Keep in sync with:  select enumlabel from pg_enum ...
+VALID_REVIEW_REASONS = {
+    "MISSING_SI",
+    "MISSING_BL",
+    "INVALID_FORMAT",
+    "MISSING_DATA",
+    None,
+}
 
 
-def get_email_id(filename: str) -> str | None:
-    match = re.match(
-        r"^(email_\d+)_(SI|BL)\.",
-        filename,
-        re.IGNORECASE,
-    )
-
-    if not match:
-        return None
-
-    return match.group(1)
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
-def load_extractions():
-    return load_json(CACHE_FILE)
+# ─────────────────────────────────────────────────────────────
+#  EXTRACTION OF ONE ATTACHMENT
+# ─────────────────────────────────────────────────────────────
+def _extract_one(filename: str, data: bytes) -> dict:
+    """
+    Run one attachment through extraction.
 
+    Returns the raw Gemini dict (flat, your document_ai.py shape):
+      {"document_type": "SI", "shipper": ..., ...}
+    or an UNREADABLE marker dict.
+    """
+    print(f"    → extracting {filename} ({len(data)} bytes)")
 
-def load_classifier():
-    return load_json(CLASSIFIER_FILE)
+    try:
+        text = read_attachment(data, filename)
+        print(f"    → text extracted: {len(text)} chars")
 
-def apply_category_corrections(classifier):
-    corrected = {}
+        result = extract_document_with_ai(
+            document_text=text,
+            document_type="UNREADABLE",
+        )
 
-    for email_id, classification in classifier.items():
+        print(f"    → Gemini said document_type = {result.get('document_type')!r}")
+        return result
 
-        email_file = INBOX_DIR / f"{email_id}.json"
+    except Exception as exc:
+        err = f"{type(exc).__name__}: {exc}"
+        print(f"    → text extraction FAILED: {err}")
 
-        if email_file.exists():
-            email = load_json(email_file)
-
-            original_category = classification.get(
-                "category",
-                "GENERAL",
-            )
-
-            category = correct_category(
-                original_category,
-                email.get("subject", ""),
-                email.get("body", ""),
-            )
-
-            corrected[email_id] = {
-                **classification,
-                "category": category,
-                "_original_category": original_category,
+        # Non-PDF → no visual fallback possible
+        if not filename.lower().endswith(".pdf"):
+            return {
+                "document_type": "UNREADABLE",
+                "status": "UNREADABLE",
+                "error": err,
             }
 
+        # Corrupted PDF → don't waste quota
+        if any(k in err for k in (
+            "EOF marker not found",
+            "Stream has ended unexpectedly",
+            "PdfStreamError",
+        )):
+            print("    → PDF appears corrupted, skipping Gemini fallback")
+            return {
+                "document_type": "UNREADABLE",
+                "status": "UNREADABLE",
+                "error": err,
+            }
+
+        # Scanned / image PDF → send bytes to Gemini visually
+        print("    → trying Gemini PDF visual extraction")
+        tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+        try:
+            tmp.write(data)
+            tmp.close()
+            result = extract_pdf_with_ai(
+                pdf_path=Path(tmp.name),
+                document_type="UNREADABLE",
+            )
+            print(f"    → Gemini said document_type = {result.get('document_type')!r}")
+            return result
+        finally:
+            Path(tmp.name).unlink(missing_ok=True)
+
+
+# ─────────────────────────────────────────────────────────────
+#  MAIN PIPELINE
+# ─────────────────────────────────────────────────────────────
+def process_email(
+    email: dict,
+    attachments: list[tuple[str, bytes]],
+    *,
+    persist: bool = True,
+    category: str | None = None,
+) -> dict:
+    """
+    email:       {email_id, from_address, subject, body, received_at}
+    attachments: [(filename, bytes), ...]
+    category:    optional pre-computed category (skips the classifier call)
+    returns:     {email: {...}, comparison: {...} | None}
+    """
+    email_id = email["email_id"]
+    attachment_names = [n for n, _ in attachments]
+
+    print("=" * 70)
+    print(f"PROCESSING {email_id}")
+    print(f"  attachments received: {len(attachments)}")
+    for n, d in attachments:
+        print(f"    - {n} ({len(d)} bytes)")
+    print("=" * 70)
+
+    # ── 1) CLASSIFY ───────────────────────────────────────
+    if category is None:
+        print("  [1/4] classifying...")
+        classification = classify_emails([{
+            "email_id":    email_id,
+            "subject":     email.get("subject", ""),
+            "body":        email.get("body", ""),
+            "attachments": attachment_names,
+        }])
+        classification = apply_attachment_rule(
+            [{"email_id": email_id, "attachments": attachment_names}],
+            classification,
+        )
+        category = classification[email_id]
+
+    print(f"  [1/4] category = {category}")
+
+    # ── 2) EXTRACT + 3) NORMALIZE + 4) COMPARE ───────────
+    comparison = None
+
+    if category == "BL_COMPARISON":
+        si_doc = None
+        bl_doc = None
+        si_file = None
+        bl_file = None
+
+        print("  [2/4] extracting attachments...")
+        for name, data in attachments:
+            result = _extract_one(name, data)
+            dt = result.get("document_type")
+
+            if dt == "SI" and si_doc is None:
+                si_doc, si_file = result, name
+            elif dt == "BL" and bl_doc is None:
+                bl_doc, bl_file = result, name
+
+        print("  [2/4] extraction results:")
+        print(f"        SI: {si_file or '(none detected)'}")
+        print(f"        BL: {bl_file or '(none detected)'}")
+
+        # If neither SI nor BL was identified, this email is not something
+        # we can compare. Fail loudly in development; swap to a NEEDS_REVIEW
+        # row before shipping.
+        if si_doc is None and bl_doc is None:
+            raise ValueError(
+                f"{email_id}: no SI or BL document detected in attachments "
+                f"{attachment_names}. Check the Gemini output above to see "
+                f"what document_type it returned for each file."
+            )
+
+        # Pick review_reason from the enum
+        if si_doc is None:
+            reason = "MISSING_SI"
+        elif bl_doc is None:
+            reason = "MISSING_BL"
         else:
-            corrected[email_id] = classification
+            reason = None
 
-    return corrected
+        if si_doc and bl_doc:
+            print("  [3/4] normalizing...")
+            si_norm = normalize_fields(si_doc)
+            bl_norm = normalize_fields(bl_doc)
 
-def is_send_draft_bl_request(subject: str = "", body: str = "") -> bool:
-    text = f"{subject} {body}".lower()
+            print("  [4/4] comparing...")
+            cmp_result = compare_documents(si_norm, bl_norm)
+            print(f"        status        = {cmp_result['status']}")
+            print(f"        defect_fields = {cmp_result['defect_fields']}")
+            print(f"        review_fields = {cmp_result['review_fields']}")
 
-    return "please assist to send the draft bl" in text
-
-def group_documents(extractions):
-    """
-    Group extracted SI/BL documents by email ID.
-
-    Readable documents are marked readable=True.
-
-    Corrupted/unreadable documents are preserved and mapped
-    back to SI/BL using their filename.
-    """
-
-    grouped = {}
-
-    for filename, result in extractions.items():
-
-        email_id = get_email_id(filename)
-
-        if email_id is None:
-            continue
-
-        if not isinstance(result, dict):
-            continue
-
-        status = result.get("status")
-
-        # Completely failed/skipped attachments are not usable
-        if status in {"ERROR", "SKIPPED"}:
-            continue
-
-        document_type = result.get("document_type")
-
-        # Normal readable SI / BL
-        if document_type in {"SI", "BL"}:
-
-            if email_id not in grouped:
-                grouped[email_id] = {}
-
-            grouped[email_id][document_type] = {
-                "filename": filename,
-                "data": result,
-                "readable": True,
+            comparison = {
+                "email_id":      email_id,
+                "si_file":       si_file,
+                "bl_file":       bl_file,
+                "status":        cmp_result["status"],
+                "review_reason": None,
+                "defect_fields": cmp_result["defect_fields"],
+                "review_fields": cmp_result["review_fields"],
+                "si_fields":     si_norm,
+                "bl_fields":     bl_norm,
+                "updated_at":    _now(),
             }
+        else:
+            # Only one side present — record what we have, mark NEEDS_REVIEW
+            print(f"  [3/4] skipping compare: {reason}")
 
-        # Preserve unreadable PDFs
-        elif document_type == "UNREADABLE":
-
-            filename_upper = filename.upper()
-
-            if "_BL." in filename_upper:
-                document_type = "BL"
-
-            elif "_SI." in filename_upper:
-                document_type = "SI"
-
-            else:
-                continue
-
-            if email_id not in grouped:
-                grouped[email_id] = {}
-
-            grouped[email_id][document_type] = {
-                "filename": filename,
-                "data": result,
-                "readable": False,
+            comparison = {
+                "email_id":      email_id,
+                "si_file":       si_file,
+                "bl_file":       bl_file,
+                "status":        "NEEDS_REVIEW",
+                "review_reason": reason,
+                "defect_fields": [],
+                "review_fields": [],
+                "si_fields":     normalize_fields(si_doc) if si_doc else None,
+                "bl_fields":     normalize_fields(bl_doc) if bl_doc else None,
+                "updated_at":    _now(),
             }
+    else:
+        print("  [2-4/4] skipped (not BL_COMPARISON)")
 
-    return grouped
-
-
-def compare_email_documents(email_id, documents):
-    """
-    Compare the SI and BL belonging to one email.
-    """
-
-    si = documents.get("SI")
-    bl = documents.get("BL")
-
-    # ---------------------------------------------------------
-    # Missing SI and BL
-    # ---------------------------------------------------------
-
-    if si is None and bl is None:
-        return {
-            "status": "NEEDS_REVIEW",
-            "defect_fields": [],
-            "review_reason": (
-                "No usable Shipping Instruction (SI) "
-                "or Bill of Lading (BL) document found."
-            ),
-        }
-
-    # ---------------------------------------------------------
-    # Missing SI
-    # ---------------------------------------------------------
-
-    if si is None:
-        return {
-            "status": "NEEDS_REVIEW",
-            "defect_fields": [],
-            "review_reason": (
-                "Shipping Instruction (SI) is missing or unreadable."
-            ),
-            "bl_file": bl["filename"],
-        }
-
-    # ---------------------------------------------------------
-    # Missing BL
-    # ---------------------------------------------------------
-
-    if bl is None:
-        return {
-            "status": "NEEDS_REVIEW",
-            "defect_fields": [],
-            "review_reason": (
-                "Bill of Lading (BL) is missing or unreadable."
-            ),
-            "si_file": si["filename"],
-        }
-
-    # ---------------------------------------------------------
-    # Unreadable SI
-    # ---------------------------------------------------------
-
-    if not si.get("readable", True):
-        return {
-            "status": "NEEDS_REVIEW",
-            "defect_fields": [],
-            "review_reason": (
-                "Shipping Instruction (SI) is unreadable."
-            ),
-            "si_file": si["filename"],
-            "bl_file": bl["filename"],
-        }
-
-    # ---------------------------------------------------------
-    # Unreadable BL
-    # ---------------------------------------------------------
-
-    if not bl.get("readable", True):
-        return {
-            "status": "NEEDS_REVIEW",
-            "defect_fields": [],
-            "review_reason": (
-                "Bill of Lading (BL) is unreadable."
-            ),
-            "si_file": si["filename"],
-            "bl_file": bl["filename"],
-        }
-
-    # ---------------------------------------------------------
-    # Normal comparison
-    # ---------------------------------------------------------
-
-    si_data = normalize_fields(si["data"])
-    bl_data = normalize_fields(bl["data"])
-
-    comparison = compare_documents(
-        si_data,
-        bl_data,
-    )
-
-    result = {
-        "status": comparison["status"],
-        "defect_fields": comparison["defect_fields"],
-        "review_fields": comparison["review_fields"],
+    # ── 5) BUILD EMAIL ROW ────────────────────────────────
+    email_row = {
+        "email_id":      email_id,
+        "from_address":  email.get("from_address"),
+        "subject":       email.get("subject", ""),
+        "body":          email.get("body", ""),
+        "received_at":   email.get("received_at"),
+        "attachments":   attachment_names,
+        "category":      category,
+        "status":        "OK",
         "review_reason": None,
-        "si_file": si["filename"],
-        "bl_file": bl["filename"],
-        "si_fields": si_data,
-        "bl_fields": bl_data,
+        "defect_fields": [],
+        "has_defect":    False,
+        "updated_at":    _now(),
     }
 
-    if comparison["status"] == "NEEDS_REVIEW":
+    if comparison is not None:
+        email_row["status"]        = comparison["status"]
+        email_row["defect_fields"] = comparison["defect_fields"]
+        email_row["has_defect"]    = (
+            comparison["status"] == "MISMATCH"
+            and len(comparison["defect_fields"]) > 0
+        )
+        email_row["review_reason"] = comparison.get("review_reason")
 
-        result["review_reason"] = (
-            "One or more comparison fields are missing."
+    # Safety check before hitting Supabase
+    if email_row["review_reason"] not in VALID_REVIEW_REASONS:
+        raise ValueError(
+            f"Invalid review_reason {email_row['review_reason']!r}. "
+            f"Valid: {sorted(r for r in VALID_REVIEW_REASONS if r)}"
         )
 
-    return result
-
-
-def run_pipeline():
+    # ── 6) PERSIST ────────────────────────────────────────
+    if persist:
+        print("  [persist] writing to Supabase...")
+        upsert_email(email_row)
+        if comparison is not None:
+            upsert_comparison(comparison)
+        print("  [persist] done.")
+    else:
+        print("  [persist] skipped (persist=False)")
+        print("  email_row  =", json.dumps(email_row, indent=2, default=str))
+        if comparison:
+            print("  comparison =", json.dumps(comparison, indent=2, default=str))
 
     print("=" * 70)
-    print("SDOC AI - CLASSIFICATION → DOCUMENT COMPARISON PIPELINE")
-    print("=" * 70)
+    print()
 
-    # ---------------------------------------------------------
-    # Load classifier results
-    # ---------------------------------------------------------
-
-    classifier = load_classifier()
-
-    print(
-        f"\nLoaded classifier results: "
-        f"{len(classifier)} emails."
-    )
-
-    classifier = apply_category_corrections(classifier)
-
-    print("Category correction layer applied.")
-
-    # ---------------------------------------------------------
-    # Load document extraction cache
-    # ---------------------------------------------------------
-
-    extractions = load_extractions()
-
-    print(
-        f"Loaded document extractions: "
-        f"{len(extractions)} files."
-    )
-
-    # ---------------------------------------------------------
-    # Group documents
-    # ---------------------------------------------------------
-
-    grouped = group_documents(extractions)
-
-    print(
-        f"Document groups available: "
-        f"{len(grouped)} emails."
-    )
-
-    # ---------------------------------------------------------
-    # ONLY process emails classified as BL_COMPARISON
-    # ---------------------------------------------------------
-
-    bl_emails = [
-        email_id
-        for email_id, classification in classifier.items()
-        if classification.get("category") == "BL_COMPARISON"
-    ]
-
-    print(
-        f"\nBL_COMPARISON emails from classifier: "
-        f"{len(bl_emails)}"
-    )
-
-    # ---------------------------------------------------------
-    # Compare each BL_COMPARISON email
-    # ---------------------------------------------------------
-
-    comparisons = {}
-
-    for email_id in sorted(bl_emails):
-
-        email_file = INBOX_DIR / f"{email_id}.json"
-        email = load_json(email_file) if email_file.exists() else {}
-
-        subject = email.get("subject", "")
-        body = email.get("body", "")
-
-        # Dataset business rule:
-        # A direct request to send the draft BL for checking
-        # is treated as an already-OK BL comparison request.
-        if is_send_draft_bl_request(subject, body):
-            comparisons[email_id] = {
-                "status": "OK",
-                "defect_fields": [],
-                "review_reason": None,
-            }
-            continue
-        
-        if "scanned copies (image only)" in f"{subject} {body}".lower():
-            comparisons[email_id] = {
-                "status": "NEEDS_REVIEW",
-                "defect_fields": [],
-                "review_reason": "unreadable",
-            }
-            continue
-
-        documents = grouped.get(email_id, {})
-
-        result = compare_email_documents(
-            email_id,
-            documents,
-        )
-
-        comparisons[email_id] = result
-
-    # ---------------------------------------------------------
-    # Save comparison results
-    # ---------------------------------------------------------
-
-    OUTPUT_FILE.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    with open(
-        OUTPUT_FILE,
-        "w",
-        encoding="utf-8",
-    ) as file:
-
-        json.dump(
-            comparisons,
-            file,
-            indent=2,
-            ensure_ascii=False,
-        )
-
-    # ---------------------------------------------------------
-    # Summary
-    # ---------------------------------------------------------
-
-    statuses = {}
-
-    for result in comparisons.values():
-
-        status = result["status"]
-
-        statuses[status] = (
-            statuses.get(status, 0) + 1
-        )
-
-    print("\n" + "=" * 70)
-    print("DOCUMENT COMPARISON COMPLETE")
-    print("=" * 70)
-
-    print(
-        f"BL_COMPARISON emails : "
-        f"{len(bl_emails)}"
-    )
-
-    print(
-        f"Comparison results   : "
-        f"{len(comparisons)}"
-    )
-
-    print("\nStatuses:")
-
-    for status, count in sorted(statuses.items()):
-
-        print(
-            f"  {status}: {count}"
-        )
-
-    print("\nOutput:")
-    print(OUTPUT_FILE)
-
-
-if __name__ == "__main__":
-    run_pipeline()
+    return {"email": email_row, "comparison": comparison}
