@@ -1,15 +1,12 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useMemo, useState } from "react";
 import { ArrowUpRight, Paperclip, Search } from "lucide-react";
 import CategoryBadge from "@/components/ui/CategoryBadge";
 import StatusBadge from "@/components/ui/StatusBadge";
-import {
-  CATEGORY_LABELS,
-  REVIEW_REASON_LABELS,
-  STATUS_LABELS,
-} from "@/lib/mock-data";
+import { REVIEW_REASON_LABELS } from "@/lib/mock-data";
 import type {
   EmailCategory,
   EmailRecord,
@@ -36,9 +33,26 @@ const STATUS_OPTIONS: StatusFilter[] = [
 ];
 
 export default function InboxTable({ emails }: { emails: EmailRecord[] }) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+
+  const rawCategory = searchParams.get("category");
+  const category: CategoryFilter =
+    rawCategory && CATEGORY_OPTIONS.includes(rawCategory as CategoryFilter)
+      ? (rawCategory as CategoryFilter)
+      : "ALL";
+
   const [query, setQuery] = useState("");
-  const [category, setCategory] = useState<CategoryFilter>("ALL");
   const [status, setStatus] = useState<StatusFilter>("ALL");
+
+  function setCategory(next: CategoryFilter) {
+    const params = new URLSearchParams(searchParams.toString());
+    if (next === "ALL") params.delete("category");
+    else params.set("category", next);
+    const qs = params.toString();
+    router.push(qs ? `${pathname}?${qs}` : pathname);
+  }
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -70,6 +84,15 @@ export default function InboxTable({ emails }: { emails: EmailRecord[] }) {
           <p className="mt-1 text-sm text-slate-500">
             {filtered.length.toLocaleString("en-US")} of{" "}
             {emails.length.toLocaleString("en-US")} messages
+            {category !== "ALL" ? (
+              <>
+                {" "}
+                · filtered by{" "}
+                <span className="font-mono text-xs text-slate-700">
+                  {category}
+                </span>
+              </>
+            ) : null}
           </p>
         </div>
       </header>
@@ -170,10 +193,7 @@ export default function InboxTable({ emails }: { emails: EmailRecord[] }) {
                       </div>
 
                       <span className="flex items-center gap-1 font-mono text-[11px] text-slate-400">
-                        <Paperclip
-                          className="h-3 w-3"
-                          aria-hidden="true"
-                        />
+                        <Paperclip className="h-3 w-3" aria-hidden="true" />
                         {attachmentCount}
                       </span>
 
