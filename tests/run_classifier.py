@@ -8,7 +8,7 @@ from backend.app.classifier import apply_attachment_rule, classify_emails
 
 DATA_DIR = Path("../data/sdoc-hackathon-bundle")
 SAMPLE_SUBMISSION = DATA_DIR / "sample_submission.json"
-OUTPUT_FILE = Path("../comparison/classifier_submission.json")
+OUTPUT_FILE = Path("../submission/classifier_submission.json")
 
 BATCH_SIZE = 50
 

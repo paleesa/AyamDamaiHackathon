@@ -1,88 +1,97 @@
-import { FileText } from "lucide-react";
+"use client";
+import { Download, FileText, ExternalLink } from "lucide-react";
+import { getAttachmentUrl } from "@/lib/api";
 
-type AttachmentKind = "SI" | "BL" | "INVOICE" | "OTHER";
-
-const KIND_STYLE: Record<AttachmentKind, { label: string; className: string }> = {
-  SI: {
-    label: "SI",
-    className: "border-violet-200 bg-violet-50 text-violet-700",
-  },
-  BL: {
-    label: "BL",
-    className: "border-indigo-200 bg-indigo-50 text-indigo-700",
-  },
-  INVOICE: {
-    label: "INVOICE",
-    className: "border-cyan-200 bg-cyan-50 text-cyan-700",
-  },
-  OTHER: {
-    label: "FILE",
-    className: "border-slate-200 bg-slate-100 text-slate-600",
-  },
+type AttachmentListProps = {
+  attachments: string[];
 };
-
-function basename(path: string): string {
-  return path.split("/").pop() ?? path;
-}
-
-function attachmentKind(path: string): AttachmentKind {
-  const base = basename(path).toLowerCase().replace(/\.[a-z0-9]+$/, "");
-
-  if (/(^|[_\-.])si($|[_\-.])/.test(base)) return "SI";
-  if (/(^|[_\-.])bl($|[_\-.])/.test(base)) return "BL";
-  if (/invoice|(^|[_\-.])inv($|[_\-.])/.test(base)) return "INVOICE";
-  return "OTHER";
-}
 
 export default function AttachmentList({
   attachments,
-}: {
-  attachments: string[];
-}) {
+}: AttachmentListProps) {
+  if (!attachments.length) {
+    return (
+      <section className="rounded-sm border border-slate-200 bg-white">
+        <header className="border-b border-slate-200 px-5 py-3">
+          <p className="text-xs font-medium text-slate-500">Attachments</p>
+        </header>
+
+        <div className="px-5 py-6 text-sm text-slate-500">
+          No attachments.
+        </div>
+      </section>
+    );
+  }
+
   return (
     <section className="rounded-sm border border-slate-200 bg-white">
-      <header className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
+      <header className="border-b border-slate-200 px-5 py-3">
         <p className="text-xs font-medium text-slate-500">
-          Attachments
+          Attachments ({attachments.length})
         </p>
-        <span className="font-mono text-xs text-slate-400">
-          {attachments.length}
-        </span>
       </header>
 
-      {attachments.length === 0 ? (
-        <p className="px-5 py-6 text-sm text-slate-500">
-          No attachments on this message.
-        </p>
-      ) : (
-        <ul className="divide-y divide-slate-100">
-          {attachments.map((path) => {
-            const kind = attachmentKind(path);
-            const style = KIND_STYLE[kind];
-            const name = basename(path);
+      <div className="divide-y divide-slate-100">
+        {attachments.map((filename) => {
+          const url = getAttachmentUrl(filename);
 
-            return (
-              <li
-                key={path}
-                className="flex items-center gap-3 px-5 py-3"
-              >
-                <FileText
-                  className="h-4 w-4 shrink-0 text-slate-400"
-                  aria-hidden="true"
-                />
-                <span className="min-w-0 flex-1 truncate font-mono text-xs text-slate-700">
-                  {name}
-                </span>
-                <span
-                  className={`inline-flex items-center whitespace-nowrap rounded-sm border px-1.5 py-0.5 font-mono text-[10px] font-medium ${style.className}`}
+          return (
+            <div
+              key={filename}
+              className="flex items-center justify-between gap-4 px-5 py-4"
+            >
+              <div className="flex min-w-0 items-center gap-3">
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-sm bg-slate-100">
+                  <FileText
+                    className="h-4 w-4 text-slate-500"
+                    aria-hidden="true"
+                  />
+                </div>
+
+                <p className="truncate text-sm text-slate-700">
+                  {filename}
+                </p>
+              </div>
+
+              <div className="flex shrink-0 items-center gap-2">
+                <a
+                  href={url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 rounded-sm border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-slate-50 hover:text-slate-900"
                 >
-                  {style.label}
-                </span>
-              </li>
-            );
-          })}
-        </ul>
-      )}
+                  <ExternalLink className="h-3.5 w-3.5" />
+                  Open
+                </a>
+
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const response = await fetch(url);
+                    const blob = await response.blob();
+
+                    const blobUrl = window.URL.createObjectURL(blob);
+                    const link = document.createElement("a");
+
+                    link.href = blobUrl;
+                    link.download = filename.replace(/^attachments\//, "");
+                    document.body.appendChild(link);
+                    link.click();
+                    link.remove();
+
+                    window.URL.revokeObjectURL(blobUrl);
+                  }}
+                  className="inline-flex items-center gap-1.5 rounded-sm border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-slate-50 hover:text-slate-900"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  Download
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </section>
   );
 }
+
