@@ -3,7 +3,6 @@
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useMemo, useState } from "react";
-import { ArrowUpRight, Paperclip, Search } from "lucide-react";
 import CategoryBadge from "@/components/ui/CategoryBadge";
 import StatusBadge from "@/components/ui/StatusBadge";
 import { REVIEW_REASON_LABELS } from "@/lib/mock-data";
@@ -12,6 +11,7 @@ import type {
   EmailRecord,
   VerificationStatus,
 } from "@/lib/types";
+import { ArrowUpRight, ChevronDown, Paperclip, Search } from "lucide-react";
 
 type CategoryFilter = EmailCategory | "ALL";
 type StatusFilter = VerificationStatus | "ALL";
@@ -79,7 +79,7 @@ export default function InboxTable({ emails }: { emails: EmailRecord[] }) {
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-lg font-semibold tracking-tight text-slate-900">
-            Inbox
+            Received Emails
           </h1>
           <p className="mt-1 text-sm text-slate-500">
             {filtered.length.toLocaleString("en-US")} of{" "}
@@ -118,7 +118,7 @@ export default function InboxTable({ emails }: { emails: EmailRecord[] }) {
           <select
             value={category}
             onChange={(e) => setCategory(e.target.value as CategoryFilter)}
-            className="h-9 w-full appearance-none rounded-sm border border-slate-200 bg-slate-50 px-3 font-mono text-xs text-slate-700 focus:border-slate-900 focus:bg-white focus:outline-none"
+            className="h-9 w-full cursor-pointer appearance-none rounded-sm border border-slate-200 bg-slate-50 pl-3 pr-9 text-sm text-slate-700 focus:border-slate-900 focus:bg-white focus:outline-none"
           >
             {CATEGORY_OPTIONS.map((option) => (
               <option key={option} value={option}>
@@ -126,6 +126,10 @@ export default function InboxTable({ emails }: { emails: EmailRecord[] }) {
               </option>
             ))}
           </select>
+          <ChevronDown
+            className="pointer-events-none absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400"
+            aria-hidden="true"
+          />
         </label>
 
         <label className="relative">
@@ -133,7 +137,7 @@ export default function InboxTable({ emails }: { emails: EmailRecord[] }) {
           <select
             value={status}
             onChange={(e) => setStatus(e.target.value as StatusFilter)}
-            className="h-9 w-full appearance-none rounded-sm border border-slate-200 bg-slate-50 px-3 font-mono text-xs text-slate-700 focus:border-slate-900 focus:bg-white focus:outline-none"
+            className="h-9 w-full cursor-pointer appearance-none rounded-sm border border-slate-200 bg-slate-50 pl-3 pr-9 text-sm text-slate-700 focus:border-slate-900 focus:bg-white focus:outline-none"
           >
             {STATUS_OPTIONS.map((option) => (
               <option key={option} value={option}>
@@ -141,6 +145,10 @@ export default function InboxTable({ emails }: { emails: EmailRecord[] }) {
               </option>
             ))}
           </select>
+          <ChevronDown
+            className="pointer-events-none absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400"
+            aria-hidden="true"
+          />
         </label>
       </div>
 
