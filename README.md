@@ -1,4 +1,4 @@
-# SDOC — Shipping Document Operations Copilot
+# SDOC - Shipping Document Operations Copilot
 
 > AI-powered email triage and Shipping Instruction (SI) ↔ Bill of Lading (BL) verification for shipping and logistics operations.
 
